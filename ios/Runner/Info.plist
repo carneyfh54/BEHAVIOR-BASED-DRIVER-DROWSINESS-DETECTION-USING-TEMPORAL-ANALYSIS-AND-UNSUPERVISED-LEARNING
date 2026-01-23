@@ -2,8 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>NSCameraUsageDescription</key>
-    <string>We need to access the camera to detect driver drowsiness.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>We need to access the camera to detect driver drowsiness.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>We need access to the microphone for video recording.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
