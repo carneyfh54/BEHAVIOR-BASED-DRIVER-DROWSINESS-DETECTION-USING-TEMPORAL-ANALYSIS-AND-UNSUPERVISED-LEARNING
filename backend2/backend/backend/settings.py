@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-e$tei%1g*5igc-s%vikt*oxqy3wh&i+g1m4e&yy5hzcnxs9gf!
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -37,6 +37,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
+    'rest_framework',
+    'machineapi',
 ]
 
 MIDDLEWARE = [
@@ -67,6 +70,16 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'backend.wsgi.application'
+
+# ASGI application for WebSocket support
+ASGI_APPLICATION = 'backend.asgi.application'
+
+# Channel layers configuration (using in-memory for development)
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
 
 
 # Database

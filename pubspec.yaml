@@ -39,6 +39,14 @@ dependencies:
   camera: ^0.10.5+5
   permission_handler: ^11.3.1
   audioplayers: ^6.1.0
+  
+  # Image processing for video frame conversion
+  image: ^4.2.0
+  
+  # WebSocket support for real-time video analysis
+  web_socket_channel: ^3.0.1
+  uuid: ^4.4.0
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:
