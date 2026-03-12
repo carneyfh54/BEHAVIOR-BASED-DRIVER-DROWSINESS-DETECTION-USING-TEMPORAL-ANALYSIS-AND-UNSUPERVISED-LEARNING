@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Large ML files
+*.npy
+*.pth
+*.pkl
+
+# Django
+db.sqlite3
+*.log
+
+# Flutter
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Mac
+.DS_Store
+
+# VS Code
+.vscode/

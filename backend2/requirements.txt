@@ -1,0 +1,24 @@
+# Django and Channels
+Django>=4.2,<5.0
+djangorestframework>=3.14.0
+channels>=4.0.0
+channels-redis>=4.1.0
+daphne>=4.0.0
+
+# WebSocket support
+redis>=4.5.0
+
+# AI/ML dependencies
+groq>=0.4.1
+openai>=1.0.0
+Pillow>=9.5.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Image processing
+numpy>=1.24.0
+
+# Async support
+asgiref>=3.6.0
+uvicorn>=0.23.0
