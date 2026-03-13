@@ -1,8 +1,7 @@
 import 'dart:typed_data';
-
-// ignore: avoid_web_libraries_in_flutter
 import 'dart:js_interop';
 import 'package:web/web.dart' as web;
+import 'package:flutter/foundation.dart';
 
 class WebCameraService {
   web.HTMLVideoElement? _videoElement;
@@ -10,19 +9,30 @@ class WebCameraService {
 
   Future<void> initialize() async {
     final videos = web.document.querySelectorAll('video');
+    if (kDebugMode) print('[CAM] Found ${videos.length} video elements');
     if (videos.length > 0) {
       _videoElement = videos.item(0) as web.HTMLVideoElement;
+      if (kDebugMode)
+        print(
+          '[CAM] Video: ${_videoElement!.videoWidth}x${_videoElement!.videoHeight}',
+        );
+    } else {
+      if (kDebugMode) print('[CAM] No video element found in DOM');
     }
     _canvas = web.document.createElement('canvas') as web.HTMLCanvasElement;
   }
 
-  Future<Uint8List?> captureFrame() async {
+  Future<Uint8List?> captureFrame({int quality = 75}) async {
     if (_videoElement == null) await initialize();
-    if (_videoElement == null) return null;
+    if (_videoElement == null) {
+      if (kDebugMode) print('[CAM] captureFrame: no video element');
+      return null;
+    }
 
     final video = _videoElement!;
     final w = video.videoWidth;
     final h = video.videoHeight;
+    if (kDebugMode) print('[CAM] captureFrame: ${w}x${h}');
     if (w == 0 || h == 0) return null;
 
     _canvas!.width = w;
@@ -37,7 +47,8 @@ class WebCameraService {
   }
 
   Uint8List _base64Decode(String source) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     final bytes = <int>[];
     int i = 0;
     final src = source.replaceAll(RegExp(r'[^A-Za-z0-9+/]'), '');

@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'face_mesh_painter.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'web_camera_service.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -8,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image/image.dart' as img;
 import 'video_analysis_service.dart';
+import 'alert_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +21,7 @@ Future<void> main() async {
 
 class MyApp extends StatelessWidget {
   final CameraDescription camera;
+
   const MyApp({super.key, required this.camera});
 
   @override
@@ -25,11 +29,21 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Driver Drowsiness Detection',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue, brightness: Brightness.light),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.light,
+        ),
         primaryColor: Colors.blue,
-        appBarTheme: const AppBarTheme(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+        secondaryHeaderColor: Colors.green,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.blue,
+          foregroundColor: Colors.white,
+        ),
         elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+          ),
         ),
       ),
       home: CameraScreen(camera: camera),
@@ -39,6 +53,8 @@ class MyApp extends StatelessWidget {
 
 class CameraScreen extends StatefulWidget {
   final CameraDescription camera;
+  
+
   const CameraScreen({super.key, required this.camera});
 
   @override
@@ -54,12 +70,19 @@ class _CameraScreenState extends State<CameraScreen> {
   String _connectionStatus = "Disconnected";
   String? _connectionError;
   int _recordingDuration = 0;
-  int _framesSent = 0;
+
+  // Video streaming
   Timer? _frameCaptureTimer;
+  int _frameCount = 0;
+  int _framesSent = 0;
 
+  // AI Analysis results
   AnalysisResult? _currentAnalysis;
+  List<AnalysisResult> _analysisHistory = [];
   List<FaceLandmark> _currentLandmarks = [];
+  bool _isAnalyzing = false;
 
+  // Server configuration
   String _serverUrl = 'localhost';
   final TextEditingController _serverUrlController = TextEditingController();
 
@@ -70,6 +93,7 @@ class _CameraScreenState extends State<CameraScreen> {
   void initState() {
     super.initState();
     _initializeCamera();
+    _webCameraService.initialize();
     _setupVideoServiceCallbacks();
   }
 
@@ -86,111 +110,147 @@ class _CameraScreenState extends State<CameraScreen> {
             } else if (type == 'analysis_result') {
               try {
                 final result = VideoAnalysisService.parseAnalysisResult(data);
-                _currentAnalysis = result;
-                _currentLandmarks = result.landmarks;
+                AlertService.onDrowsinessLevel(result.drowsinessLevel);
+                setState(() {
+                  _isAnalyzing = false;
+                  _currentAnalysis = result;
+                  _currentLandmarks = result.landmarks;
+                  _analysisHistory.insert(0, result);
+                  if (_analysisHistory.length > 10) {
+                    _analysisHistory.removeLast();
+                  }
+                });
               } catch (e) {
-                if (kDebugMode) print('Error parsing result: $e');
+                if (kDebugMode) {
+                  print('Error parsing analysis result: $e');
+                }
+              }
+            } else if (type == 'calibrating') {
+              final collected = data['frames_collected'] ?? 0;
+              final needed = data['frames_needed'] ?? 90;
+              _statusText = "🔧 Calibrating... ($collected/$needed frames)";
+            } else if (type == 'calibration_complete') {
+              _statusText = "✅ Calibration complete! Detecting drowsiness...";
+            } else if (type == 'processing') {
+              _isAnalyzing = true;
+            } else if (type == 'frame_received') {
+              if (data['analyzed'] == false) {
+                _framesSent++;
               }
             }
           });
         }
       },
       onConnected: () {
-        if (mounted) setState(() {
-          _isConnected = true;
-          _connectionStatus = "Connected";
-          _connectionError = null;
-        });
+        if (mounted) {
+          setState(() {
+            _isConnected = true;
+            _connectionStatus = "Connected";
+            _connectionError = null;
+          });
+        }
       },
       onError: (error) {
-        if (mounted) setState(() {
-          _isConnected = false;
-          _connectionStatus = "Error";
-          _connectionError = error;
-          _statusText = "Connection error: $error";
-        });
+        if (mounted) {
+          setState(() {
+            _isConnected = false;
+            _connectionStatus = "Error";
+            _connectionError = error;
+            _statusText = "Connection error: $error";
+          });
+        }
       },
       onDisconnected: () {
-        if (mounted) setState(() {
-          _isConnected = false;
-          _connectionStatus = "Disconnected";
-        });
+        if (mounted) {
+          setState(() {
+            _isConnected = false;
+            _connectionStatus = "Disconnected";
+          });
+        }
       },
     );
   }
 
   Future<void> _initializeCamera() async {
-    setState(() => _statusText = "Requesting camera permission...");
+    setState(() {
+      _statusText = "Requesting camera permission...";
+    });
 
-    if (!kIsWeb) {
-      final cameraPermission = await Permission.camera.request();
-      final micPermission = await Permission.microphone.request();
-      if (!cameraPermission.isGranted || !micPermission.isGranted) {
-        setState(() => _statusText = "Camera permission denied");
-        return;
-      }
-    }
+    final cameraPermission = await Permission.camera.request();
+    final micPermission = await Permission.microphone.request();
 
-    setState(() => _statusText = "Setting up camera...");
-    _controller = CameraController(widget.camera, ResolutionPreset.medium, enableAudio: false);
 
-    try {
-      await _controller!.initialize();
-      if (mounted) setState(() {
-        _isInitialized = true;
-        _statusText = "Ready to start real-time analysis";
+    if (cameraPermission.isGranted && micPermission.isGranted) {
+      setState(() {
+        _statusText = "Setting up camera...";
       });
-    } catch (e) {
-      if (mounted) setState(() => _statusText = "Camera error: $e");
+
+      _controller = CameraController(
+        widget.camera,
+        ResolutionPreset.high,
+        enableAudio: false, // Disable audio for frame analysis
+      );
+
+      try {
+        await _controller!.initialize();
+
+        if (mounted) {
+          setState(() {
+            _isInitialized = true;
+            _statusText = "Ready to start real-time analysis";
+          });
+          _webCameraService.initialize();
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _statusText = "Camera not available. Please use a real device.";
+          });
+        }
+      }
+    } else {
+      setState(() {
+        _statusText = "Camera/microphone permission denied";
+      });
     }
   }
 
   Future<void> _startAnalysis() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-
     try {
-      await _videoService.connect(_serverUrl, port: 8000);
-
+      if (!_videoService.isConnected) {
+        await _videoService.connect(_serverUrl, port: 8000);
+      }
       setState(() {
         _isRecording = true;
-        _statusText = "🔴 Analyzing drowsiness in real-time...";
+        _statusText = "🔴 Analyzing driver drowsiness in real-time...";
         _recordingDuration = 0;
-        _framesSent = 0;
+        _currentAnalysis = null;
+        _currentLandmarks = [];
+        AlertService.reset();
       });
-
       _startDurationCounter();
-
-      if (kIsWeb) {
-        await Future.delayed(const Duration(milliseconds: 600));
-        await _webCameraService.initialize();
-        _frameCaptureTimer = Timer.periodic(const Duration(milliseconds: 300), (_) async {
-          if (!_isRecording || !_videoService.isConnected) return;
-          try {
-            final bytes = await _webCameraService.captureFrame();
-            if (bytes != null && bytes.isNotEmpty) {
-              await _videoService.sendFrame(bytes);
-              setState(() => _framesSent++);
-            }
-          } catch (e) {
-            if (kDebugMode) print('Web frame error: $e');
-          }
-        });
-      } else {
-        await _controller!.startImageStream(_captureFrame);
-      }
-
+      _frameCaptureTimer = Timer.periodic(const Duration(milliseconds: 200), (_) async {
+        if (!_isRecording || !_videoService.isConnected) return;
+        try {
+          final bytes = await _webCameraService.captureFrame();
+          if (bytes != null) await _videoService.sendFrame(bytes);
+        } catch (e) {
+          if (kDebugMode) print('Frame capture error: $e');
+        }
+      });
     } catch (e) {
       setState(() {
-        _statusText = "Failed to start: $e";
+        _statusText = "Failed to start analysis: $e";
         _connectionError = e.toString();
       });
     }
   }
-
   void _startDurationCounter() {
     Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted && _isRecording) {
-        setState(() => _recordingDuration++);
+        setState(() {
+          _recordingDuration++;
+        });
       } else {
         timer.cancel();
       }
@@ -198,90 +258,157 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _captureFrame(CameraImage image) async {
-    if (!_isRecording || !_videoService.isConnected) return;
+    if (!_isRecording || !_videoService.isConnected) {
+      return;
+    }
+
     try {
-      final bytes = await _convertToJpeg(image);
-      if (bytes.isNotEmpty) {
-        await _videoService.sendFrame(bytes);
-        setState(() => _framesSent++);
+      // Convert CameraImage to JPEG bytes
+      final Uint8List jpegBytes = await _convertCameraImageToJpeg(image);
+
+      if (jpegBytes.isNotEmpty) {
+        _frameCount++;
+        await _videoService.sendFrame(jpegBytes);
       }
     } catch (e) {
-      if (kDebugMode) print('Frame error: $e');
+      if (kDebugMode) {
+        print('Error capturing frame: $e');
+      }
     }
   }
 
-  Future<Uint8List> _convertToJpeg(CameraImage image) async {
+  Future<Uint8List> _convertCameraImageToJpeg(CameraImage image) async {
     try {
-      img.Image? converted;
+      img.Image? convertedImage;
+
+      // Handle different camera image formats
       if (image.format.group == ImageFormatGroup.yuv420) {
-        converted = img.Image(width: image.width, height: image.height);
+        // Convert YUV420 to RGB image
+        convertedImage = img.Image(width: image.width, height: image.height);
+
+        // Get Y, U, V planes
         final yPlane = image.planes[0];
         final uPlane = image.planes[1];
         final vPlane = image.planes[2];
-        final yBuf = yPlane.bytes;
-        final uBuf = uPlane.bytes;
-        final vBuf = vPlane.bytes;
-        final yStride = yPlane.bytesPerRow;
-        final uvStride = uPlane.bytesPerRow;
-        final uvPixel = uPlane.bytesPerPixel ?? 1;
+
+        final yBuffer = yPlane.bytes;
+        final uBuffer = uPlane.bytes;
+        final vBuffer = vPlane.bytes;
+
+        // Use bytesPerRow as stride (correct property name)
+        final int yRowStride = yPlane.bytesPerRow;
+        final int uvRowStride = uPlane.bytesPerRow;
+        final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
+
+        // Convert YUV to RGB
         for (int y = 0; y < image.height; y++) {
           for (int x = 0; x < image.width; x++) {
-            final yVal = yBuf[y * yStride + x];
-            final uvIdx = (y ~/ 2) * uvStride + (x ~/ 2) * uvPixel;
-            final uVal = uBuf[uvIdx] - 128;
-            final vVal = vBuf[uvIdx] - 128;
-            final r = (yVal + 1.402 * vVal).round().clamp(0, 255);
-            final g = (yVal - 0.344136 * uVal - 0.714136 * vVal).round().clamp(0, 255);
-            final b = (yVal + 1.772 * uVal).round().clamp(0, 255);
-            converted.setPixelRgba(x, y, r, g, b, 255);
+            final int yIndex = y * yRowStride + x;
+            final int uvIndex =
+                ((y ~/ 2) * uvRowStride) + (((x ~/ 2) * uvPixelStride)).toInt();
+
+            final int yValue = yBuffer[yIndex];
+            final int uValue = uBuffer[uvIndex] - 128;
+            final int vValue = vBuffer[uvIndex] - 128;
+
+            // YUV to RGB conversion formula
+            int r = (yValue + (1.402 * vValue).round()).clamp(0, 255);
+            int g =
+                (yValue -
+                        (0.344136 * uValue).round() -
+                        (0.714136 * vValue).round())
+                    .clamp(0, 255);
+            int b = (yValue + (1.772 * uValue).round()).clamp(0, 255);
+
+            convertedImage.setPixelRgba(x, y, r, g, b, 255);
           }
         }
       } else if (image.format.group == ImageFormatGroup.bgra8888) {
-        converted = img.Image.fromBytes(
-          width: image.width, height: image.height,
-          bytes: image.planes[0].bytes.buffer, order: img.ChannelOrder.bgra,
+        // Already in BGRA format - convert directly
+        final bytes = image.planes[0].bytes;
+        convertedImage = img.Image.fromBytes(
+          width: image.width,
+          height: image.height,
+          bytes: bytes.buffer,
+          order: img.ChannelOrder.bgra,
         );
       } else if (image.format.group == ImageFormatGroup.jpeg) {
+        // Already JPEG format - return directly
         return image.planes[0].bytes;
       }
-      if (converted == null) return Uint8List(0);
-      return Uint8List.fromList(img.encodeJpg(converted, quality: 70));
+
+      if (convertedImage == null) {
+        return Uint8List(0);
+      }
+
+      // Encode to JPEG
+      final jpeg = img.encodeJpg(convertedImage, quality: 75);
+      return Uint8List.fromList(jpeg);
     } catch (e) {
+      if (kDebugMode) {
+        print('Error converting image: $e');
+      }
       return Uint8List(0);
     }
   }
 
   Future<void> _stopAnalysis() async {
-    _frameCaptureTimer?.cancel();
-    _frameCaptureTimer = null;
-    if (!kIsWeb && _controller != null && _controller!.value.isStreamingImages) {
-      await _controller!.stopImageStream();
+    try {
+      // Stop camera stream
+      _frameCaptureTimer?.cancel();
+      _frameCaptureTimer = null;
+
+      // Disconnect WebSocket
+      _videoService.disconnect();
+
+      setState(() {
+        _isRecording = false;
+        _isConnected = false;
+        _connectionStatus = "Disconnected";
+        _statusText = "Analysis stopped";
+        _isAnalyzing = false;
+      });
+    } catch (e) {
+      setState(() {
+        _statusText = "Error stopping analysis: $e";
+      });
     }
-    _videoService.disconnect();
-    setState(() {
-      _isRecording = false;
-      _isConnected = false;
-      _connectionStatus = "Disconnected";
-      _statusText = "Analysis stopped";
-      _currentAnalysis = null;
-      _currentLandmarks = [];
-      _currentAnalysis = null;
-      _currentLandmarks = [];
-    });
   }
 
   Future<void> _connectToServer() async {
-    setState(() { _connectionStatus = "Connecting..."; _connectionError = null; });
+    if (_serverUrl.isEmpty) {
+      setState(() {
+        _connectionError = "Please enter a server URL";
+      });
+      return;
+    }
+
+    setState(() {
+      _connectionStatus = "Connecting...";
+      _connectionError = null;
+    });
+
     try {
       await _videoService.connect(_serverUrl, port: 8000);
-      if (_videoService.isConnected) setState(() => _statusText = "Connected! Press Start");
+
+      if (_videoService.isConnected) {
+        setState(() {
+          _statusText = "Connected! Press Start to begin analysis";
+        });
+      }
     } catch (e) {
-      setState(() { _connectionError = "Failed: $e"; _connectionStatus = "Failed"; });
+      setState(() {
+        _connectionError = "Failed to connect: $e";
+        _connectionStatus = "Connection failed";
+      });
     }
   }
 
-  String _formatDuration(int s) =>
-      '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
+  String _formatDuration(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+  }
 
   @override
   void dispose() {
@@ -295,162 +422,300 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   Widget build(BuildContext context) {
     if (!_isInitialized) {
-      return Scaffold(
-        body: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter, end: Alignment.bottomCenter,
-              colors: [Colors.blue, Colors.lightBlueAccent],
-            ),
-          ),
-          child: Center(child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const CircularProgressIndicator(color: Colors.white),
-              const SizedBox(height: 20),
-              Text(_statusText, style: const TextStyle(color: Colors.white, fontSize: 16)),
-            ],
-          )),
-        ),
-      );
+      return _buildLoadingScreen();
     }
 
     return Scaffold(
       body: Stack(
         children: [
-          // Camera preview
+          // Camera Preview
           SizedBox.expand(child: CameraPreview(_controller!)),
-
-          // Face mesh overlay
-          if (_currentLandmarks.isNotEmpty)
-            Positioned.fill(
-              child: CustomPaint(
-                painter: FaceMeshPainter(
-                  landmarks: _currentLandmarks,
-                  drowsinessLevel: _currentAnalysis?.drowsinessLevel ?? 'awake',
-                ),
-              ),
-            ),
-
-          // Connection badge
+// Face mesh overlay
+if (_currentLandmarks.isNotEmpty)
+  Positioned.fill(
+    child: CustomPaint(
+      painter: FaceMeshPainter(
+        landmarks: _currentLandmarks,
+        drowsinessLevel: _currentAnalysis?.drowsinessLevel ?? 'awake',
+      ),
+    ),
+  ),
+          // Connection Status Overlay
           Positioned(
-            top: 48, left: 10, right: 10,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: _isConnected ? Colors.green.withValues(alpha: 0.85) : Colors.orange.withValues(alpha: 0.85),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(_isConnected ? Icons.cloud_done : Icons.cloud_off, color: Colors.white, size: 14),
-                    const SizedBox(width: 5),
-                    Text(_connectionStatus, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                  ]),
-                ),
-              ],
-            ),
+            top: 10,
+            left: 10,
+            right: 10,
+            child: _buildConnectionStatusOverlay(),
           ),
 
-          // Analysis result overlay
+          // AI Analysis Result Overlay
           if (_currentAnalysis != null)
             Positioned(
-              top: 90, left: 10, right: 10,
-              child: _buildResultCard(),
+              top: 80,
+              left: 10,
+              right: 10,
+              child: _buildAnalysisResultOverlay(),
             ),
 
-          // Status text
-          if (_isRecording)
-            Positioned(
-              bottom: 110, left: 0, right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.5),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    "${_formatDuration(_recordingDuration)} · $_framesSent frames sent",
-                    style: const TextStyle(color: Colors.white70, fontSize: 11, fontFamily: 'monospace'),
-                  ),
+          // Status Text - Top Section
+          Positioned(
+            top: 50,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.black.withOpacity(0.7), Colors.transparent],
                 ),
               ),
-            ),
-
-          // Controls
-          Positioned(
-            bottom: 36, left: 0, right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                FloatingActionButton.small(
-                  heroTag: 'connect',
-                  onPressed: _showServerDialog,
-                  backgroundColor: _isConnected ? Colors.green : Colors.white.withValues(alpha: 0.3),
-                  child: Icon(_isConnected ? Icons.link : Icons.link_off, color: Colors.white),
-                ),
-                FloatingActionButton(
-                  heroTag: 'start',
-                  onPressed: _isRecording ? _stopAnalysis : _startAnalysis,
-                  backgroundColor: _isRecording ? Colors.red : Colors.white,
-                  foregroundColor: _isRecording ? Colors.white : Colors.red,
-                  child: Icon(_isRecording ? Icons.stop : Icons.play_arrow, size: 32),
-                ),
-                FloatingActionButton.small(
-                  heroTag: 'settings',
-                  onPressed: _showServerDialog,
-                  backgroundColor: Colors.white.withValues(alpha: 0.3),
-                  child: const Icon(Icons.settings, color: Colors.white),
-                ),
-              ],
+              child: Column(
+                children: [
+                  Text(
+                    _statusText,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black,
+                          offset: Offset(1, 1),
+                          blurRadius: 3,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_isRecording) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      "Duration: ${_formatDuration(_recordingDuration)} | Frames: $_framesSent",
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
 
+          // Recording Indicator
+          if (_isRecording)
+            Positioned(top: 50, right: 20, child: _buildRecordingIndicator()),
+
+          // Control Buttons - Bottom Section
+          Positioned(
+            bottom: 30,
+            left: 0,
+            right: 0,
+            child: _buildControlButtons(),
+          ),
+
+          // Error Dialog
           if (_connectionError != null) _buildErrorDialog(),
         ],
       ),
     );
   }
 
-  Widget _buildResultCard() {
+  Widget _buildLoadingScreen() {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.blue, Colors.lightBlueAccent],
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(color: Colors.white),
+              const SizedBox(height: 20),
+              Text(
+                _statusText,
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConnectionStatusOverlay() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: _isConnected
+            ? Colors.green.withOpacity(0.8)
+            : Colors.orange.withOpacity(0.8),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _isConnected ? Icons.cloud_done : Icons.cloud_off,
+            color: Colors.white,
+            size: 16,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            _connectionStatus,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAnalysisResultOverlay() {
+    if (_currentAnalysis == null) return const SizedBox.shrink();
+
     final analysis = _currentAnalysis!;
-    final colors = {
-      'awake': Colors.green,
-      'mildly drowsy': Colors.yellow,
-      'moderately drowsy': Colors.orange,
-      'highly drowsy': Colors.red,
-    };
-    final color = colors[analysis.drowsinessLevel] ?? Colors.grey;
+    Color statusColor;
+
+    switch (analysis.drowsinessLevel) {
+      case 'awake':
+        statusColor = Colors.green;
+        break;
+      case 'mildly drowsy':
+        statusColor = Colors.yellow;
+        break;
+      case 'moderately drowsy':
+        statusColor = Colors.orange;
+        break;
+      case 'highly drowsy':
+        statusColor = Colors.red;
+        break;
+      default:
+        statusColor = Colors.grey;
+    }
 
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
+        color: Colors.black.withOpacity(0.7),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color, width: 2),
+        border: Border.all(color: statusColor, width: 2),
       ),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(analysis.isDrowsy ? Icons.warning : Icons.check_circle, color: color, size: 22),
-          const SizedBox(width: 8),
-          Text(analysis.drowsinessStatus, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.bold)),
-        ]),
-        const SizedBox(height: 6),
-        Text("Confidence: ${(analysis.confidence * 100).toStringAsFixed(1)}%",
-            style: const TextStyle(color: Colors.white70, fontSize: 12)),
-        if (analysis.observations.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              analysis.observations.first,
-              style: const TextStyle(color: Colors.white60, fontSize: 10),
-              textAlign: TextAlign.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                analysis.isDrowsy ? Icons.warning : Icons.check_circle,
+                color: statusColor,
+                size: 24,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                analysis.drowsinessStatus,
+                style: TextStyle(
+                  color: statusColor,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Confidence: ${(analysis.confidence * 100).toStringAsFixed(1)}%",
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+          if (analysis.observations.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                analysis.observations.take(2).join(", "),
+                style: const TextStyle(color: Colors.white, fontSize: 10),
+                textAlign: TextAlign.center,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecordingIndicator() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.red,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
             ),
           ),
-      ]),
+          const SizedBox(width: 6),
+          const Text(
+            "LIVE",
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlButtons() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        // Server Connection Button
+        FloatingActionButton.small(
+          onPressed: _showServerDialog,
+          backgroundColor: _isConnected
+              ? Colors.green
+              : Colors.white.withOpacity(0.3),
+          child: Icon(
+            _isConnected ? Icons.link : Icons.link_off,
+            color: Colors.white,
+          ),
+        ),
+
+        // Start/Stop Button
+        FloatingActionButton(
+          onPressed: _isRecording ? _stopAnalysis : _startAnalysis,
+          backgroundColor: _isRecording ? Colors.red : Colors.white,
+          foregroundColor: _isRecording ? Colors.white : Colors.red,
+          child: Icon(_isRecording ? Icons.stop : Icons.play_arrow, size: 32),
+        ),
+
+        // Settings Button
+        FloatingActionButton.small(
+          onPressed: _showServerDialog,
+          backgroundColor: Colors.white.withOpacity(0.3),
+          child: const Icon(Icons.settings, color: Colors.white),
+        ),
+      ],
     );
   }
 
@@ -459,40 +724,74 @@ class _CameraScreenState extends State<CameraScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Server Configuration"),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-            controller: _serverUrlController,
-            decoration: const InputDecoration(
-              labelText: "Server IP",
-              hintText: "localhost or 172.20.10.5",
-              prefixIcon: Icon(Icons.dns),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _serverUrlController,
+              decoration: const InputDecoration(
+                labelText: "Server IP Address",
+                hintText: "172.20.10.5",
+                prefixIcon: Icon(Icons.dns),
+              ),
+              onChanged: (value) => _serverUrl = value,
             ),
-            onChanged: (v) => _serverUrl = v,
-          ),
-          const SizedBox(height: 16),
-          SizedBox(width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () { Navigator.pop(context); _connectToServer(); },
-              child: const Text("Connect"),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _connectToServer();
+                    },
+                    child: const Text("Connect"),
+                  ),
+                ),
+              ],
             ),
-          ),
-          if (_connectionError != null) ...[
-            const SizedBox(height: 10),
-            Text(_connectionError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+            if (_connectionError != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _connectionError!,
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ],
           ],
-        ]),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Close"),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildErrorDialog() {
     return AlertDialog(
-      title: const Text("Error"),
-      content: Text(_connectionError ?? "Unknown error"),
+      title: const Text("Connection Error"),
+      content: Text(_connectionError ?? "An unknown error occurred"),
       actions: [
-        TextButton(onPressed: () => setState(() => _connectionError = null), child: const Text("Dismiss")),
-        TextButton(onPressed: () { setState(() => _connectionError = null); _connectToServer(); }, child: const Text("Retry")),
+        TextButton(
+          onPressed: () {
+            setState(() {
+              _connectionError = null;
+            });
+          },
+          child: const Text("Dismiss"),
+        ),
+        TextButton(
+          onPressed: () {
+            setState(() {
+              _connectionError = null;
+            });
+            _connectToServer();
+          },
+          child: const Text("Retry"),
+        ),
       ],
     );
   }
