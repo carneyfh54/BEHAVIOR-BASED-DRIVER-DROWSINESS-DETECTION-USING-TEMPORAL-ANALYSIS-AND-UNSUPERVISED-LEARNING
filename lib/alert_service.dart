@@ -34,7 +34,8 @@ class AlertService {
     if (!kIsWeb) return;
     try {
       final freq = _getFrequency(level);
-      final js = '''
+      final js =
+          '''
         window._alarmFreq = $freq;
         window._alarmInterval_ms = 300;
         if (window._alarmCtx) window._alarmCtx.close();
@@ -60,9 +61,11 @@ class AlertService {
         if (window._alarmTimer) clearInterval(window._alarmTimer);
         window._alarmTimer = setInterval(window._alarmBeep, window._alarmInterval_ms);
         window._alarmBeep();
-      '''.toJS;
+      '''
+              .toJS;
       web.window.callMethod('eval'.toJS, js);
-      if (kDebugMode) print('[ALERT] Alarm started: $level @ ${_getFrequency(level)}Hz');
+      if (kDebugMode)
+        print('[ALERT] Alarm started: $level @ ${_getFrequency(level)}Hz');
     } catch (e) {
       if (kDebugMode) print('[ALERT] Alarm error: $e');
     }
@@ -71,12 +74,18 @@ class AlertService {
   static void _updateAlarmSpeed() {
     if (!kIsWeb) return;
     try {
-      final interval = _drowsyFrameCount > 50 ? 120 : _drowsyFrameCount > 25 ? 200 : 300;
-      final js = '''
+      final interval = _drowsyFrameCount > 50
+          ? 120
+          : _drowsyFrameCount > 25
+          ? 200
+          : 300;
+      final js =
+          '''
         if (window._alarmTimer) clearInterval(window._alarmTimer);
         window._alarmInterval_ms = $interval;
         window._alarmTimer = setInterval(window._alarmBeep, $interval);
-      '''.toJS;
+      '''
+              .toJS;
       web.window.callMethod('eval'.toJS, js);
     } catch (e) {
       if (kDebugMode) print('[ALERT] Update speed error: $e');
@@ -86,10 +95,12 @@ class AlertService {
   static void _stopAlarm() {
     if (!kIsWeb) return;
     try {
-      final js = '''
+      final js =
+          '''
         if (window._alarmTimer) { clearInterval(window._alarmTimer); window._alarmTimer = null; }
         if (window._alarmCtx) { window._alarmCtx.close(); window._alarmCtx = null; }
-      '''.toJS;
+      '''
+              .toJS;
       web.window.callMethod('eval'.toJS, js);
       if (kDebugMode) print('[ALERT] Alarm stopped');
     } catch (e) {
@@ -99,10 +110,14 @@ class AlertService {
 
   static int _getFrequency(String level) {
     switch (level) {
-      case 'highly drowsy': return 1200;
-      case 'moderately drowsy': return 900;
-      case 'mildly drowsy': return 700;
-      default: return 440;
+      case 'highly drowsy':
+        return 1200;
+      case 'moderately drowsy':
+        return 900;
+      case 'mildly drowsy':
+        return 700;
+      default:
+        return 440;
     }
   }
 
